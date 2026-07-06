@@ -8,6 +8,8 @@ from .watershed import WatershedSegmenter
 from .levelset import ChanVeseSegmenter, MorphGACSegmenter
 from .graphcut import GraphCutSegmenter
 from .randomwalker import RandomWalkerSegmenter
+from .texture import GaborSegmenter, AmFmSegmenter
+from .granulometry import GranulometrySegmenter
 
 REGISTRY = {
     # Tier 1
@@ -22,6 +24,10 @@ REGISTRY = {
     "morphgac": MorphGACSegmenter,
     "graphcut": GraphCutSegmenter,
     "random_walker": RandomWalkerSegmenter,
+    # Tier 3 (texture / morphology)
+    "gabor": GaborSegmenter,
+    "amfm": AmFmSegmenter,
+    "granulometry": GranulometrySegmenter,
 }
 
 __all__ = [
@@ -29,4 +35,5 @@ __all__ = [
     "OtsuSegmenter", "MultiOtsuSegmenter", "KMeansSegmenter", "GMMSegmenter",
     "RegionGrowingSegmenter", "WatershedSegmenter",
     "ChanVeseSegmenter", "MorphGACSegmenter", "GraphCutSegmenter", "RandomWalkerSegmenter",
+    "GaborSegmenter", "AmFmSegmenter", "GranulometrySegmenter",
 ]

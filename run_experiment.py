@@ -60,6 +60,8 @@ def build_method(name, args):
         return cls(lam=args.gc_lambda, sigma=args.gc_sigma, gmm_k=args.k)
     if name == "random_walker":
         return cls(beta=args.rw_beta)
+    if name in ("gabor", "amfm", "granulometry"):
+        return cls(k=args.k, andiff=not args.no_andiff)
     return cls()
 
 
@@ -116,6 +118,9 @@ def main():
     p.add_argument("--gc-lambda", type=float, default=2.0, help="graphcut Potts weight")
     p.add_argument("--gc-sigma", type=float, default=0.08, help="graphcut contrast sigma")
     p.add_argument("--rw-beta", type=float, default=130.0, help="random walker beta")
+    # Tier-3 knobs
+    p.add_argument("--no-andiff", action="store_true",
+                   help="disable Perona-Malik denoise in the texture methods")
     args = p.parse_args()
 
     prep = Path(args.preprocessed_dir) if args.preprocessed_dir else config.PREPROCESSED_DIR

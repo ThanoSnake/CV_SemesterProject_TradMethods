@@ -1,6 +1,6 @@
 # TradSeg — Traditional (non-neural) segmentation on MSD Spleen
 
-Classical segmentation methods (Tier 1 & 2) for MSD Task09 Spleen, scored **per-volume** in
+Classical segmentation methods (Tier 1–3) for MSD Task09 Spleen, scored **per-volume** in
 the same 256×256 space and 5-fold CV as the baseline U-Net, so results are directly
 comparable. CPU-only, no GPU needed.
 
@@ -47,6 +47,9 @@ python3 run_experiment.py --method multiotsu --fold 0 --regime auto \
 | `morphgac` | edge level set (Morph-GAC) | balloons from init to gradient edges |
 | `graphcut` | GMM + MRF/Potts, min-cut | GMM unaries + contrast-Potts + fg/bg hard seeds (needs PyMaxflow) |
 | `random_walker` | graph diffusion (Grady) | fg/bg markers |
+| `gabor` | texture: Gabor energy + K-means | Ch.13; weak on CT (spleen barely textured) |
+| `amfm` | AM-FM / Teager-energy DCA + K-means | Ch.13 energy operators (Maragos-Bovik) |
+| `granulometry` | morphological pattern-spectrum + K-means | Ch.13 granulometries; local top-hats |
 
 **Regimes.** `auto` = fully automatic (fair vs the automatic U-Net); the spleen is
 localised via a probabilistic location + intensity prior built from the **training**
@@ -62,6 +65,8 @@ postprocess.py    3D largest-CC, small-object removal, hole fill, prior/overlap 
 seeding.py        SpatialPrior (auto) + oracle markers / seed points
 methods/          Tier 1: otsu, multiotsu, kmeans, gmm, region_growing, watershed
                   Tier 2: chanvese, morphgac, graphcut, random_walker
+                  Tier 3: gabor, amfm, granulometry
+texture_utils.py  Tier-3 helpers: Perona-Malik, Gabor bank, Teager energy, granulometry
 run_experiment.py  run ONE method x fold x regime -> scores JSON (generic; used by run_tier*.sh)
 list_methods.py    print a tier's registered method names (used by run_tier*.sh)
 run_tier{1,2,3}.sh self-contained per-tier driver: clone->deps->download->preprocess->experiments
