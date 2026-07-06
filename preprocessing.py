@@ -28,7 +28,7 @@ from typing import Optional
 
 import numpy as np
 
-from . import config
+import config
 
 
 # --------------------------- array transforms --------------------------------

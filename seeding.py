@@ -15,8 +15,9 @@ resized Track B. For the no-resize Track B variant use the oracle regime (or a h
 import numpy as np
 from scipy import ndimage as ndi
 
-from . import config, io_utils
-from . import postprocess as P
+import config
+import io_utils
+import postprocess as P
 
 
 class SpatialPrior:

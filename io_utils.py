@@ -10,7 +10,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import config
+import config
 
 
 def load_splits(path=None):

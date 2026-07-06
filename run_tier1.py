@@ -14,11 +14,12 @@ from pathlib import Path
 
 import numpy as np
 
-from . import config, io_utils
-from . import metrics as M
-from . import postprocess as P
-from . import seeding
-from .methods import REGISTRY
+import config
+import io_utils
+import metrics as M
+import postprocess as P
+import seeding
+from methods import REGISTRY
 
 
 def peak_rss_mb():

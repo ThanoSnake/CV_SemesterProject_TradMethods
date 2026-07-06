@@ -8,8 +8,8 @@ liver/kidney/muscle, so intensity alone cannot separate them -- that is the poin
 
 import numpy as np
 
-from .base import Segmenter, apply_per_slice, body_mask
-from .. import config
+from methods.base import Segmenter, apply_per_slice, body_mask
+import config
 
 
 class OtsuSegmenter(Segmenter):

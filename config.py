@@ -10,8 +10,8 @@ preprocessed volumes verbatim (maximum fairness), point DATA_DIR at its data dir
 import os
 from pathlib import Path
 
-# tradseg/config.py -> parent.parent == repo root (TradSegMethods/)
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+# the directory holding the code modules (== repo root when the code lives flat)
+PROJECT_ROOT = Path(__file__).resolve().parent
 
 TASK = os.environ.get("TASK", "Task09_Spleen")
 

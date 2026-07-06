@@ -8,8 +8,8 @@ spleen among the candidate blobs.
 
 import numpy as np
 
-from .base import Segmenter, body_mask
-from .. import config
+from methods.base import Segmenter, body_mask
+import config
 
 
 class _IntensityCluster(Segmenter):
