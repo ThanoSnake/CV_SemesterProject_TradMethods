@@ -1,9 +1,10 @@
-"""Tier-1 runner: run a traditional method over one CV fold and score it per-volume,
-in the SAME space/conventions as the baseline U-Net (directly comparable numbers).
+"""Generic per-method runner: run ONE traditional method over one CV fold and score it
+per-volume, in the SAME space/conventions as the baseline U-Net (directly comparable).
+Used by the per-tier drivers run_tier1.sh / run_tier2.sh / run_tier3.sh.
 
 Examples:
-  python -m tradseg.run_tier1 --method multiotsu --fold 0 --regime auto  --preprocessed-dir data/Task09_Spleen/preprocessed_A
-  python -m tradseg.run_tier1 --method watershed --fold 0 --regime oracle --advanced
+  python3 run_experiment.py --method multiotsu --fold 0 --regime auto  --preprocessed-dir data/Task09_Spleen/preprocessed_A
+  python3 run_experiment.py --method graphcut  --fold 0 --regime oracle --advanced
 """
 
 import argparse
@@ -50,6 +51,15 @@ def build_method(name, args):
         return cls(tolerance=args.tolerance)
     if name == "watershed":
         return cls(gradient_sigma=args.gradient_sigma)
+    if name == "chanvese":
+        return cls(iterations=(args.iterations or None), smoothing=args.smoothing)
+    if name == "morphgac":
+        return cls(iterations=(args.iterations or None), smoothing=args.smoothing,
+                   balloon=args.balloon, alpha=args.gac_alpha, sigma=args.gac_sigma)
+    if name == "graphcut":
+        return cls(lam=args.gc_lambda, sigma=args.gc_sigma, gmm_k=args.k)
+    if name == "random_walker":
+        return cls(beta=args.rw_beta)
     return cls()
 
 
@@ -97,6 +107,15 @@ def main():
     p.add_argument("--gradient-sigma", type=float, default=1.0)
     p.add_argument("--seed-k", type=int, default=1)
     p.add_argument("--min-size", type=int, default=50)
+    # Tier-2 knobs
+    p.add_argument("--iterations", type=int, default=0, help="level-set iterations (0 = method default)")
+    p.add_argument("--smoothing", type=int, default=1, help="level-set smoothing")
+    p.add_argument("--balloon", type=float, default=1.0, help="morphgac balloon force")
+    p.add_argument("--gac-alpha", type=float, default=100.0, help="morphgac inverse-gradient alpha")
+    p.add_argument("--gac-sigma", type=float, default=2.0, help="morphgac inverse-gradient sigma")
+    p.add_argument("--gc-lambda", type=float, default=2.0, help="graphcut Potts weight")
+    p.add_argument("--gc-sigma", type=float, default=0.08, help="graphcut contrast sigma")
+    p.add_argument("--rw-beta", type=float, default=130.0, help="random walker beta")
     args = p.parse_args()
 
     prep = Path(args.preprocessed_dir) if args.preprocessed_dir else config.PREPROCESSED_DIR
@@ -126,7 +145,8 @@ def main():
     agg = M.aggregate(per_case)
     tarr = np.array(list(times.values()), float)
     meta = {
-        "method": args.method, "fold": args.fold, "regime": args.regime, "track": args.track,
+        "method": args.method, "tier": getattr(method, "tier", 1),
+        "fold": args.fold, "regime": args.regime, "track": args.track,
         "n_cases": len(per_case),
         "sec_per_case_mean": float(tarr.mean()) if tarr.size else float("nan"),
         "sec_per_case_std": float(tarr.std()) if tarr.size else float("nan"),
@@ -134,7 +154,7 @@ def main():
     }
     out_dir = Path(args.out_dir) if args.out_dir else config.RESULTS_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
-    stem = f"tier1_{args.method}_{args.regime}_track{args.track}_f{args.fold}"
+    stem = f"{args.method}_{args.regime}_track{args.track}_f{args.fold}"
     with open(out_dir / f"{stem}.json", "w") as f:
         json.dump({"meta": meta, "mean": agg["mean"], "per_case": per_case, "times": times},
                   f, indent=2)

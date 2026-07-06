@@ -20,8 +20,9 @@ import numpy as np
 
 class Segmenter(ABC):
     name = "base"
+    tier = 1                    # 1 = baseline, 2 = level sets / graph cut / random walker, ...
     requires_seeds = False
-    seed_type = None            # 'points' (region growing) | 'markers' (watershed)
+    seed_type = None            # 'points' (region growing) | 'markers' (watershed / graph cut / ...)
 
     @abstractmethod
     def segment_volume(self, image, seeds=None):

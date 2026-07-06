@@ -5,6 +5,7 @@ numpy<2
 scipy
 scikit-image
 scikit-learn
+PyMaxflow          # Tier-2 graph cut (Boykov-Kolmogorov max-flow)
 medpy
 nibabel
 SimpleITK
