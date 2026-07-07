@@ -22,15 +22,17 @@
 #   nohup bash run_all.sh &          # progress: tail -f ~/tradseg-run/run_all_*.log
 #
 # Env knobs (defaults: ONE fold, single training of each net):
-#   FOLDS="0"  EPOCHS=150  WEAK_FRAC=0.5  WEAK_EPOCHS=$EPOCHS  MC=30
+#   FOLDS="0"  EPOCHS=150  WEAK_FRAC=0.2  WEAK_EPOCHS=$EPOCHS  MC=30
 #   UNC=entropy  BRANCH=main  FORCE=  (set FORCE=1 to recompute test/hybrid JSONs)
+#   Hybrids: seed-and-solve RW + edge-snapping GAC (balloon 0) on a Track-B image, with a
+#   val-tuned uncertainty-selective safety net (reports always/selective/oracle).
 #   For the full 5-fold CV later:  FOLDS="0 1 2 3 4" nohup bash run_all.sh &
 #
 set -uo pipefail
 
 FOLDS="${FOLDS:-0}"
 EPOCHS="${EPOCHS:-150}"
-WEAK_FRAC="${WEAK_FRAC:-0.5}"
+WEAK_FRAC="${WEAK_FRAC:-0.2}"          # genuinely weak base (frac 0.5 -> ~0.92, above the trad ceiling)
 WEAK_EPOCHS="${WEAK_EPOCHS:-$EPOCHS}"
 MC="${MC:-30}"
 UNC="${UNC:-entropy}"          # predictive entropy: strong, boundary-localised (aleatoric) gate
@@ -38,7 +40,7 @@ FORCE="${FORCE:-}"
 
 BASE_TAG="${BASE_TAG:-baseline}"
 MC_TAG="${MC_TAG:-mcdropout}"
-WEAK_TAG="${WEAK_TAG:-weak}"
+WEAK_TAG="${WEAK_TAG:-weak02}"          # tag encodes the frac so a new frac retrains (not skip)
 
 REPO_URL="${REPO_URL:-https://github.com/ThanoSnake/CV_SemesterProject_TradMethods.git}"
 BRANCH="${BRANCH:-main}"

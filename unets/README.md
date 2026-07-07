@@ -33,9 +33,15 @@ preprocess Track A (skip if present) → per fold train+test **3 nets** (skip-if
 ```bash
 curl -O https://raw.githubusercontent.com/ThanoSnake/CV_SemesterProject_TradMethods/main/unets/run_all.sh
 nohup bash run_all.sh &          # tail -f ~/tradseg-run/run_all_*.log
-# defaults: ONE fold, WEAK_FRAC=0.5, UNC=entropy. Knobs: FOLDS="0" EPOCHS=150 WEAK_FRAC=0.5 MC=30 UNC=entropy FORCE=1
+# defaults: ONE fold, WEAK_FRAC=0.2, UNC=entropy. Knobs: FOLDS="0" EPOCHS=150 WEAK_FRAC=0.2 MC=30 UNC=entropy FORCE=1
 # full 5-fold CV later:  FOLDS="0 1 2 3 4" nohup bash run_all.sh &
 ```
+Hybrid refiners (v2, informed by fold-0 + tier-2 oracle): **random walker = seed-and-solve**
+(erode/dilate markers, the config that won tier-2 boundary metrics), **GAC = edge-snapping**
+(balloon 0, no ballooning), both run on a **Track-B re-windowed image** (exact closed-form remap
+on the same A grid → stronger spleen edges, pixel-aligned). A **val-tuned uncertainty-selective
+safety net** decides per case whether to refine (score = boundary MC fg-variance; threshold fit on
+the val fold → fair). Each hybrid JSON reports `always` / `selective` / `oracle` Dice.
 The three nets: `baseline` (pure, p=0), `mcdropout` (p=0.4), `weak` (pure, WEAK_FRAC of train).
 Hybrid #1 = uncertainty-gated refinement of `mcdropout`; Hybrid #2 = morphological anchored
 refinement of `weak`. Results: weights `results/unets/`, hybrids `results/hybrid/`, final

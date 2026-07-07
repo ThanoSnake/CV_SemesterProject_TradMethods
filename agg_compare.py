@@ -41,11 +41,12 @@ def _collect(paths):
         pc = data.get("per_case", {})
         exps.setdefault(key, {})
         bases.setdefault(key, {})
+        _extra = ("Dice_base", "Dice_refined", "Dice_delta", "Dice_delta_refine",
+                  "band_frac", "score", "selected", "sec")
         for case, sc in pc.items():
-            # split hybrid payload (has Dice_base) into refined scores + base scores
-            refined = {k: v for k, v in sc.items()
-                       if k not in ("Dice_base", "Dice_delta", "band_frac")}
-            exps[key][case] = refined
+            # per_case["Dice"] holds the METHOD's score (for hybrids: the selective variant);
+            # strip the bookkeeping keys, keep the metric dict.
+            exps[key][case] = {k: v for k, v in sc.items() if k not in _extra}
             if "Dice_base" in sc:
                 bases[key][case] = {"Dice": sc["Dice_base"]}
     return exps, bases
