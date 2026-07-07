@@ -1,133 +1,118 @@
 # TradSeg — Project State & Handoff
 
-> Read this file first. It fully describes the project's purpose, the fairness
-> contract with the baseline, the code architecture (file by file), what is done,
-> what is not, the implementation plan, and the concrete next steps. A new agent
-> should be able to continue the work from this document alone.
+> Read this file first. It fully describes the project's purpose, the fairness contract with
+> the baseline, the code architecture, what is done, the REAL-DATA results & findings so far,
+> what is pending, and the concrete next steps. A new agent should be able to continue from
+> this document alone. (Updated only on explicit request, not every change.)
 
 ---
 
 ## 1. TL;DR for a new agent
 
-- **Goal:** implement *traditional* (non-neural) image-segmentation methods and compare
-  them against an already-built baseline **U-Net** on a **medical** task from the
-  **Medical Segmentation Decathlon (MSD)**, along three axes: **accuracy, time, memory**.
-  Later (not now): *hybrid* methods combining the two schools.
-- **Task chosen:** **MSD Task09 Spleen** (abdominal CT, single organ, ~41 labelled volumes,
-  spleen = label 1). Work **2D per-slice first**, extend to 3D later.
-- **Status:** **Tier 1 is fully implemented and verified on synthetic data** (unit +
-  end-to-end integration). It has **NOT yet been run on the real MSD data.** The next
-  concrete action is to run `run_all_tier1.sh` on the GPU/CPU VM and inspect real numbers.
+- **Goal:** implement *traditional* (non-neural) segmentation methods and compare them to an
+  already-built **U-Net** baseline on **MSD Task09 Spleen** (abdominal CT, ~41 labelled
+  volumes, spleen = label 1), along three axes: **accuracy, time, memory**. Later: *hybrids*.
+- **Status:** **Tiers 1, 2, 3 are ALL implemented** and have been **run on the real MSD data
+  on the VM**. Tier 1, Tier 2, and Tier-3 `gabor` results have been evaluated (see §9). A
+  **seeding overhaul** (adaptive auto-markers) has just been implemented to fix the dominant
+  auto-regime failure; it has **NOT yet been re-run on real data**.
+- **Headline finding:** traditional **seeded** methods (watershed, morphgac, random_walker)
+  reach **~0.88–0.92 Dice given good seeds (`oracle`)** — competitive with U-Net (~0.90–0.95),
+  at **CPU / seconds / <1.1 GB**. The whole gap is **automatic localization** (`auto` ≪ `oracle`),
+  and its dominant cause was an **empty-marker bug** now fixed by the new seeding.
 - **This folder (`tradseg/`) IS the online git repo** (`github.com/ThanoSnake/CV_SemesterProject_TradMethods`,
-  branch `main`). The code is **flat** (modules at the repo root) and is run as
-  `python3 <script>.py` (absolute imports — **do not** use `python -m`). Keep every new
-  deliverable inside this folder.
-- **CPU-only.** No GPU is needed for the traditional methods. That is precisely the
-  "space/time" story vs the GPU-hungry U-Net.
+  branch `main`). Code is **flat** (modules at repo root), run as `python3 <script>.py`
+  (absolute imports — **not** `python -m`). Keep every new deliverable inside this folder.
+- **CPU-only.** No GPU needed for the traditional methods — that is the "space/time" story.
 
 ---
 
 ## 2. Purpose & academic context
 
-- NTUA (ΕΜΠ) 8th-semester **Computer Vision / Όραση Υπολογιστών** course of **Prof. P. Maragos**;
-  this is the semester project.
-- The project deliberately leans on the course's toolbox: **mathematical morphology**,
-  **nonlinear (lattice / (max,+) / morphological-PDE) algebra**, **level sets / active
-  contours / variational methods**, and **texture** (Gabor / AM-FM energy operators, MRF,
-  granulometries). Two textbook chapters are the source of ideas (see §14).
-- The research angle is not "old methods lose to U-Net" (known), but the **trade-off**:
-  traditional methods need **no training data, no GPU, little memory**, are **interpretable**,
-  and give a **time-to-first-result** advantage. The story is the *gap vs the cost*.
+- NTUA (ΕΜΠ) 8th-semester **Computer Vision** course of **Prof. P. Maragos**; semester project.
+- Leans on the course toolbox: **mathematical morphology**, **nonlinear (lattice / (max,+) /
+  morphological-PDE) algebra**, **level sets / active contours / variational methods**, and
+  **texture** (Gabor / AM-FM energy operators, MRF, granulometries). Sources: two textbook
+  chapters (§15).
+- The angle is the **trade-off**: traditional methods need **no training data, no GPU, little
+  memory**, are **interpretable**, and give **time-to-first-result**. The story is *gap vs cost*.
 
 ---
 
 ## 3. Dataset & task
 
-- **MSD Task09 Spleen**, downloaded as `Task09_Spleen.tar` (~1.5 GB) from
+- **MSD Task09 Spleen** — `Task09_Spleen.tar` (~1.5 GB) from
   `https://msd-for-monai.s3-us-west-2.amazonaws.com/Task09_Spleen.tar`.
-- Contents: `imagesTr/` (41 CT volumes, NIfTI), `labelsTr/` (spleen = 1, background = 0),
-  `imagesTs/` (unlabelled → not used; MSD test labels are hidden).
-- Chosen because it is the standard "easy" MSD organ: single structure, decent contrast,
-  small dataset → good for prototyping traditional methods. Tumour tasks (pancreas, lung,
-  colon, liver-tumour, brain) are expected to *fail* with traditional methods and are left
-  as future "negative-result" motivation for hybrids.
-- **Physical difficulty to keep in mind:** on CT the spleen (~40–60 HU) is nearly
-  **isointense** with liver, kidney, muscle. Pure-intensity methods therefore *cannot*
-  separate it from neighbours and will "leak"; this is inherent (not a bug) and is the
-  reason we add spatial priors, connected-component selection, and seeded methods.
+- `imagesTr/` (41 CT NIfTI), `labelsTr/` (spleen=1, bg=0), `imagesTs/` (unlabelled → unused).
+- Standard "easy" MSD organ (single structure, small dataset). Tumour tasks are expected to
+  fail with traditional methods (future negative-result motivation for hybrids).
+- **Physical difficulty:** on CT the spleen (~40–60 HU) is nearly **isointense** with liver,
+  kidney, muscle → pure-intensity methods cannot separate it (they "predict everything"). This
+  is inherent, not a bug; it motivates spatial priors + seeded methods.
 
 ---
 
 ## 4. The baseline to beat, and the FAIRNESS CONTRACT
 
-A U-Net baseline **already exists** (built earlier, separate work) in the sibling folder
-`../my_unet-uncertainty/` — a custom 2D **RecursiveUNet** (DKFZ/batchgenerators style)
-plus MC-Dropout uncertainty variants (GitHub `ThanoSnake/my_unet`, branch
-`uncertainty_spleen`). **We do not import or run it here** (that happens separately, on GPU).
+A U-Net baseline **already exists** in the sibling folder `../my_unet-uncertainty/` — a custom
+2D **RecursiveUNet** + MC-Dropout uncertainty (GitHub `ThanoSnake/my_unet`, branch
+`uncertainty_spleen`). **We do not import or run it here** (separate, GPU). We reproduce its
+**data + evaluation contract** for direct comparability:
 
-We reproduce its **data + evaluation contract** so numbers are directly comparable:
-
-- **Preprocessed volume format:** per case a `(2, Z, S, S)` `.npy`, channel 0 = CT image in
-  `[0,1]`, channel 1 = integer label. `S = 256`.
-- **Fixed CT window:** center 40, width 400 HU → `[-160, 240]` → `[0,1]` (air → 0). Fixed,
-  not per-volume, so the intensity→tissue mapping is identical across cases.
-- **Axial-first**, **label-free body crop** (drop air/table), **square-pad + resize 256**
-  (image bilinear, label nearest).
-- **Splits:** seeded (42) **5-fold CV**, each case in the test set of exactly one fold
-  (`splits.pkl`). Our `create_splits` reproduces this algorithm exactly → identical folds.
-- **Evaluation:** **per-volume**, in the preprocessed 256×256 space, **without voxel
-  spacing** (so HD95/ASSD are in *resized-voxel units*, z treated isotropically), scored on
-  the **foreground label only (spleen=1)**, averaged across cases with **nanmean**.
-  Dice = 2TP/(2TP+FP+FN); NaN iff both pred & ref empty. HD95/ASSD = NaN if pred or ref is
-  empty/full. **Dice/Jaccard are the honest headline; surface metrics are secondary.**
-- **The U-Net's train-time foreground-slice curation does NOT transfer** to us (traditional
-  methods have no training). Consequence: our automatic methods must fight **empty-slice
-  false positives** via a presence prior + **3D largest-connected-component** post-processing.
-  Always evaluate **per-volume, never per-slice** (per-slice Dice is mostly NaN).
-
-**Two preprocessing tracks** were agreed (see §6) so the fair comparison is preserved while
-still giving traditional methods a fair shot.
+- **Preprocessed volume:** per case `(2, Z, S, S)` npy — ch0 = CT in `[0,1]`, ch1 = int label. S=256.
+- **Fixed CT window** center 40 / width 400 HU → `[-160,240]` → `[0,1]` (air→0). Fixed, not per-volume.
+- **Axial-first**, **label-free body crop**, **square-pad + resize 256** (image bilinear, label nearest).
+- **Splits:** seeded (42) **5-fold CV** (`splits.pkl`); `create_splits` reproduces the baseline's exactly.
+- **Evaluation:** **per-volume**, in the 256×256 space, **without voxel spacing** (HD95/ASSD in
+  resized-voxel units, z isotropic), foreground label only, averaged with **nanmean**.
+  Dice=2TP/(2TP+FP+FN); NaN iff both empty. HD95/ASSD NaN if pred/ref empty or full.
+  **Dice/Jaccard are the honest headline; surface metrics secondary.**
+- **Fairness rule:** the `auto` regime uses ONLY (training prior + training intensity model +
+  test image), **never the test GT** → same "GT-blind" class as U-Net. The `oracle` regime uses
+  the test GT → **upper bound / diagnostic only**, never reported as the fair number.
 
 ---
 
 ## 5. Repository & environment
 
-- **The online repo == this `tradseg/` folder.** Its contents sit at the *repo root*
-  (flat). Files outside it in the parent `TradSegMethods/` working dir
-  (`../my_unet-uncertainty/`, the two lecture PDFs) are **context only, not in the repo.**
-- **Flat layout + absolute imports.** Run modules directly: `python3 run_tier1.py …`,
-  `python3 preprocessing.py …`. `config.PROJECT_ROOT = dir(config.py)` = repo root when flat.
-  Do **not** use `python -m tradseg.X` (that would need a package wrapper we deliberately
-  removed).
-- **Execution env:** the user runs on a **GCP Deep Learning VM (L4 24 GB GPU)**, but the
-  traditional methods are **CPU-bound** and need no GPU. Deps pin **`numpy<2`** (aligns with
-  the baseline stack). Local dev machine is Windows + Anaconda (`C:\Users\feida\anaconda3\python.exe`).
-- **Self-contained runner** `run_all_tier1.sh` clones the repo, installs deps, downloads the
-  data once, preprocesses once, runs every experiment, and writes one folder per method.
+- **The online repo == this `tradseg/` folder** (the user's local git is here; only its contents
+  are pushed). Files outside it in the parent `TradSegMethods/` (`../my_unet-uncertainty/`, the
+  two lecture PDFs) are **context only, not in the repo.**
+- **Flat layout + absolute imports.** Run modules directly (`python3 run_experiment.py …`,
+  `python3 preprocessing.py …`). `config.PROJECT_ROOT = dir(config.py)` = repo root when flat.
+  Do **not** use `python -m`.
+- **Execution env:** user runs on a **GCP Deep Learning VM (L4 24 GB GPU)**, but the traditional
+  methods are **CPU-bound** (no GPU). Deps pin **`numpy<2`**. Local dev = Windows + Anaconda
+  (`C:\Users\feida\anaconda3\python.exe`), used only for synthetic verification.
+- **Per-tier self-contained runners** `run_tier1.sh` / `run_tier2.sh` / `run_tier3.sh` (identical
+  except the `TIER` default line): clone/update repo → deps → download data (once) → dual-track
+  preprocess (once) → run that tier's methods → `results/tier<N>/<method>/`. They resolve the
+  tier's methods via `list_methods.py <tier>`. No GPU, no U-Net.
 
 ---
 
 ## 6. Design decisions (locked)
 
-1. **Dual-track preprocessing** (standalone, re-implemented; not the U-Net's code):
-   - **Track A ("fair")** — identical to the U-Net contract (window c40/w400, resize 256).
-     Use for the headline comparison.
-   - **Track B ("trad")** — traditional-optimised: narrower soft-tissue window (**c50/w150**,
-     more fat/organ contrast) + **median denoise**, still resized 256.
-   - **Track Bnr** — Track B but **no resize + spacing sidecar** (`*.spacing.json`), for
-     Tier-3 texture / mm-accurate surface metrics later. (Auto spatial prior needs a fixed
-     in-plane size, so Bnr is not for the `auto` regime.)
-2. **Two seeding/eval regimes:**
-   - **`auto`** — fully automatic (fair vs the automatic U-Net). The spleen is localised via
-     a **spatial prior built from the training fold**: an in-plane (H,W) location prior + a
-     Gaussian intensity model of spleen HU. Uses training data only (like the U-Net) — never
-     the test GT.
-   - **`oracle`** — seeds / component derived from the case GT → **per-method upper bound**.
-3. **Per-volume evaluation** exactly matching the U-Net (see §4).
-4. **Results are stored one folder per method** (`results/<method>/…json`), not all mixed.
-5. **Emphasis on morphology / nonlinear algebra** threads through: morphological
-   post-processing, marker-controlled watershed (eikonal flavour), and the planned Tier-3
-   granulometries / morphological level sets.
+1. **Dual-track PREPROCESSING** (a preprocessing axis — NOT a seeding policy):
+   - **Track A ("fair")** — identical to U-Net (window c40/w400, resize 256). Headline comparison.
+   - **Track B ("trad")** — traditional-optimised: narrower window **c50/w150** (more fat/organ
+     contrast, sharper boundaries) + **median denoise**, resize 256.
+   - **Track Bnr** — Track B, no resize + spacing sidecar (for Tier-3 / mm metrics; not for `auto`).
+   - Both tracks use the SAME seeding; they only change the image the methods operate on.
+2. **Two seeding/eval REGIMES:**
+   - **`auto`** — fully automatic, fair: spleen localised via a **training-fold spatial prior**
+     (in-plane location atlas + Gaussian intensity model). No test GT.
+   - **`oracle`** — seeds/component from the case GT → **per-method upper bound** (diagnostic).
+     Initialised PURELY from GT (does NOT pass through the auto policy; `prior` is not even built
+     in an oracle run).
+   - *(A third `heuristic` zero-training regime — fixed anatomical prior, no dataset labels — was
+     discussed and DEFERRED by the user.)*
+3. **Adaptive, always-non-empty auto seeding** (overhaul 2026-07-07, see §8) — replaced the old
+   fixed-threshold marker that produced empty fg on ~1/3 of cases.
+4. **Per-volume evaluation** exactly matching the U-Net (§4).
+5. **Results one folder per method**, under `results/tier<N>/<method>/`.
+6. **Emphasis on morphology / nonlinear algebra** throughout (morphological post-processing,
+   marker-watershed↔eikonal, morphological level sets, granulometries, Teager energy).
 
 ---
 
@@ -135,172 +120,195 @@ still giving traditional methods a fair shot.
 
 | File | Role |
 |---|---|
-| `config.py` | Paths + the data contract (env-overridable: `DATA_DIR`, `TASK`, window, size, `FOREGROUND_LABEL`). `spleen_target_intensity()` maps ~50 HU into the `[0,1]` window (~0.52). |
-| `preprocessing.py` | Standalone raw-NIfTI → `(2,Z,S,S)` npy + `splits.pkl`. `PreprocConfig` + `TRACKS={A,B,Bnr}`. Steps: `normalize_ct` → `axial_axis` → `body_bbox` → optional `denoise` → optional `square_resize`. `create_splits` reproduces the baseline's seeded 5-fold. CLI: `--track`. |
-| `io_utils.py` | `load_splits`, `fold_cases`, `load_case` (→ image `(Z,H,W)` float `[0,1]`, label int), `iter_cases`. |
-| `metrics.py` | `dice/jaccard/precision/recall` (numpy) + `HD95/ASSD` (via `medpy`, lazy). `evaluate_case` (foreground label, per volume), `aggregate` (nanmean + std + n). NaN rules match the baseline. |
-| `postprocess.py` | `keep_largest_cc`, `keep_k_largest_cc`, `remove_small_objects`, `fill_holes` (3D), `fill_holes_2d` (per slice), `binary_closing/opening`, `select_component_by_prior`, `select_component_by_overlap`, and a convenience `clean(...)`. |
-| `seeding.py` | `SpatialPrior.from_training` (in-plane prior + intensity model); `.select` (prior component pick), `.auto_markers` (watershed fg/bg), `.auto_seed_points` (region-growing seeds). Oracle helpers: `oracle_markers`, `oracle_seed_points`. |
-| `methods/base.py` | `Segmenter` ABC: `segment_volume(image, seeds=None) -> bool (Z,H,W)`; attrs `requires_seeds`, `seed_type` (`points`/`markers`). Helpers `apply_per_slice`, `body_mask`. **Segmenters must never read GT.** |
-| `methods/thresholding.py` | `OtsuSegmenter`, `MultiOtsuSegmenter` (keeps the intensity band containing the spleen target). Weak by design. |
-| `methods/clustering.py` | `KMeansSegmenter`, `GMMSegmenter` on `[0,1]` intensities; keep the cluster nearest the spleen intensity. |
-| `methods/region_growing.py` | `RegionGrowingSegmenter` — `skimage.segmentation.flood` from seed points, intensity tolerance. `seed_type="points"`. |
-| `methods/watershed.py` | `WatershedSegmenter` — marker-controlled watershed on gradient-magnitude relief, fg/bg markers. `seed_type="markers"`. |
-| `methods/levelset.py` | **Tier 2** — `ChanVeseSegmenter` (MorphACWE, region) + `MorphGACSegmenter` (edge). fg marker = init level set, evolved **2D per slice**. |
-| `methods/graphcut.py` | **Tier 2** — `GraphCutSegmenter` = GMM unaries + contrast-sensitive Potts pairwise + fg/bg hard seeds; PyMaxflow min-cut, 2D per slice (this IS the GMM+MRF/Potts method). |
-| `methods/randomwalker.py` | **Tier 2** — `RandomWalkerSegmenter` (Grady): fg/bg markers, 2D per slice. |
-| `methods/__init__.py` | `REGISTRY` = 6 Tier-1 + 4 Tier-2 (`chanvese, morphgac, graphcut, random_walker`). |
-| `run_tier1.py` | Generic orchestrator CLI (Tier 1 **and** Tier 2): load fold → (auto) build `SpatialPrior` from train → per test case: build seeds (auto/oracle) → `segment_volume` → localise (prior/overlap component pick + `clean`) → `evaluate_case` → aggregate → write `results/<method>/<method>_<regime>_track<T>_f<fold>.json` with meta (`tier`, sec/case, peak RSS). The Segmenter `tier` attribute + `seed_type` drive naming/seeding generically, so new methods need no runner changes beyond a `build_method` branch. |
-| `run_all_tier1.sh` | Self-contained runner (see §12); iterates all registered methods. |
-| `requirements.txt` | `numpy<2, scipy, scikit-image, scikit-learn, PyMaxflow, medpy, nibabel, SimpleITK, pandas, matplotlib`. |
-| `README.md` | User-facing usage. |
-| `.gitignore` | Ignores `__pycache__/`, `data/`, `results/`, `*.npy`, `*.log`, etc. |
-| `run_losses.sh` | A reference script from the U-Net project (not part of this pipeline; can be deleted). |
+| `config.py` | Paths + data contract (env-overridable). `spleen_target_intensity()` ≈ 0.52. |
+| `preprocessing.py` | raw NIfTI → `(2,Z,S,S)` npy + `splits.pkl`. `TRACKS={A,B,Bnr}`. CLI `--track`. |
+| `io_utils.py` | `load_splits`, `fold_cases`, `load_case`, `iter_cases`. |
+| `metrics.py` | Dice/Jaccard/Precision/Recall (numpy) + HD95/ASSD (medpy, lazy). `evaluate_case`, `aggregate`. |
+| `postprocess.py` | 3D largest-CC, small-object removal, fill_holes(2D/3D), closing/opening, `select_component_by_prior`/`_overlap`, `clean(...)`. |
+| `seeding.py` | `SpatialPrior.from_training` (atlas + intensity model); `select` (prior component pick); **NEW adaptive** `auto_markers`/`auto_seed_points` (per-slice top-p% of prior×match, z-gating, guaranteed non-empty, centred) via `_seed_from_score`. Oracle: `oracle_markers`, `oracle_seed_points` (pure GT). |
+| `methods/base.py` | `Segmenter` ABC: `segment_volume(image, seeds=None)->bool`; attrs `tier`, `requires_seeds`, `seed_type` (`points`/`markers`). **Never read GT.** |
+| `methods/thresholding.py` | **T1** `OtsuSegmenter`, `MultiOtsuSegmenter` (intensity). |
+| `methods/clustering.py` | **T1** `KMeansSegmenter`, `GMMSegmenter` (intensity clustering). |
+| `methods/region_growing.py` | **T1** `RegionGrowingSegmenter` (flood from points). `seed_type="points"`. |
+| `methods/watershed.py` | **T1** `WatershedSegmenter` (marker-controlled, gradient relief). `seed_type="markers"`. |
+| `methods/levelset.py` | **T2** `ChanVeseSegmenter` (MorphACWE, region) + `MorphGACSegmenter` (edge). fg marker = init, 2D/slice. |
+| `methods/graphcut.py` | **T2** `GraphCutSegmenter` = GMM unaries + contrast-Potts + fg/bg hard seeds (PyMaxflow); = **GMM+MRF**. |
+| `methods/randomwalker.py` | **T2** `RandomWalkerSegmenter` (Grady): fg/bg markers, 2D/slice. |
+| `methods/texture.py` | **T3** `GaborSegmenter` (Gabor energy), `AmFmSegmenter` (Teager-energy DCA). Feature→KMeans. |
+| `methods/granulometry.py` | **T3** `GranulometrySegmenter` (multiscale morphological top-hats). |
+| `texture_utils.py` | T3 helpers: Perona-Malik, Gabor bank, Teager energy, granulometry top-hats. |
+| `methods/__init__.py` | `REGISTRY` = 6 T1 + 4 T2 + 3 T3 = **13 methods**. |
+| `run_experiment.py` | **Generic** per-method runner (any tier): load fold → (auto) build prior → seeds → `segment_volume` → localise → `evaluate_case` → write `results/…/<method>_<regime>_track<T>_f<fold>.json` (+meta tier/time/RSS). New methods need only a `build_method` branch. |
+| `list_methods.py` | Prints a tier's method names (by the `tier` attr); used by `run_tier*.sh`. |
+| `run_tier1.sh` / `run_tier2.sh` / `run_tier3.sh` | Self-contained per-tier drivers (identical but the `TIER` default). |
+| `requirements.txt` | numpy<2, scipy, scikit-image, scikit-learn, PyMaxflow, medpy, nibabel, SimpleITK, pandas, matplotlib. |
+| `README.md`, `.gitignore` | usage / ignores (`data/`, `results/`, `__pycache__`, …). |
+| `run_losses.sh` | Reference from the U-Net project (unused; can delete). |
 
-**Data/results layout at runtime** (git-ignored):
+**Runtime layout** (git-ignored):
 ```
 data/Task09_Spleen/{imagesTr,labelsTr, preprocessed_A/, preprocessed_B/, splits.pkl}
-results/<method>/<method>_<regime>_track<T>_f<fold>.json
+results/tier<N>/<method>/<method>_<regime>_track<T>_f<fold>.json
 ```
 
 ---
 
 ## 8. Status — what is DONE
 
-- **Tier 1 fully implemented**: 6 methods (otsu, multiotsu, kmeans, gmm, region_growing,
-  watershed) + preprocessing (A/B/Bnr) + seeding (auto prior + oracle) + per-volume metrics
-  (Dice/Jaccard/HD95/ASSD) + 3D post-processing + orchestrator + self-contained runner.
-- **Verified locally on synthetic data** (Anaconda Python), three levels:
-  - unit tests of `metrics` (Dice/Jaccard/precision/recall, NaN rules, aggregate) and
-    `postprocess` (largest-CC, small-object removal, prior/overlap select, hole fill);
-  - a smoke test of the thresholding methods (shapes/dtypes, `scikit-image`/`sklearn` present);
-  - an **end-to-end integration test**: synthetic `(2,Z,256,256)` cases with an isointense
-    "distractor", run through the real `python3 run_tier1.py` CLI for all method×regime combos
-    → all exit 0; the `auto` regime correctly selected the target over the distractor via the
-    spatial prior. (Test files were ephemeral/scratch, not committed.)
-- **Absolute-import refactor** done so the code runs flat (`python3 script.py`), matching the
-  flat repo and the `run_losses.sh` style.
-- `run_all_tier1.sh` `bash -n` syntax-checked.
-- **Tier 2 implemented (2026-07-06):** `chanvese` (MorphACWE, region level set), `morphgac`
-  (Morph-GAC, edge level set), `graphcut` (GMM unaries + contrast-Potts + PyMaxflow min-cut
-  = **GMM+MRF/Potts**), `random_walker` (Grady) — all **2D per-slice**, seeded via fg/bg
-  markers, registered in `REGISTRY`, runnable through the **same** `run_tier1.py`. Synthetic
-  integration passed for all 4 (auto+oracle). **Not yet run on real data.** `chanvese` is
-  init-sensitive (region-based, no edge stop) → expect variance; `morphgac`/`graphcut`/
-  `random_walker` are more stable. **Results filenames dropped the `tier1_` prefix** → now
-  `<method>_<regime>_track<T>_f<fold>.json` (the tier lives in the JSON `meta`).
+- **Tiers 1, 2, 3 all implemented** (13 methods) + dual-track preprocessing + auto/oracle seeding
+  + per-volume metrics + 3D post-processing + generic runner + per-tier self-contained scripts.
+  All verified on synthetic `(2,Z,256,256)` data (unit + end-to-end integration, all exit 0).
+- **Run on the real MSD data on the VM** and evaluated: **Tier 1** (all 6), **Tier 2** (all 4),
+  **Tier 3 `gabor`** (see §9). *(Tier-1 real results were produced by an earlier `run_all_tier1.sh`
+  → old folder/naming `results/<method>/tier1_…`; Tier 2/3 use the current per-tier layout.)*
+- **Seeding overhaul (2026-07-07):** `auto_markers`/`auto_seed_points` rewritten — **adaptive
+  per-slice top-p%** of the prior×match score, **z-gating** (a slice is seeded only if its peak
+  score ≥ `slice_gate`×global-peak), **guaranteed non-empty** (global argmax fallback), **centred
+  seeds** (one per spleen slice for region growing). Fixes the ~1/3 empty-fg-marker failures.
+  Fairness unchanged (training prior + intensity + test image, no GT). Constants: `top_frac=0.02,
+  slice_gate=0.35, min_seed=20`. Verified on synthetic (seeded auto 0.91–1.0). **NOT yet re-run
+  on real data.** Affects ONLY `auto` of the seeded methods (T1 watershed/region_growing;
+  T2 chanvese/morphgac/graphcut/random_walker).
 
 ---
 
-## 9. Status — what is NOT done / risks / caveats
+## 9. Real-data RESULTS & key findings (pooled per-case Dice, 5-fold, 41 cases)
 
-- **Never run on real MSD data.** The only path not exercisable locally is
-  `preprocessing.py` on real NIfTI (no data/Linux locally). If anything breaks it will show
-  early in the VM log at "preprocess track A". Watch `nibabel` loading / axial-axis / spacing.
-- **Real-data numbers unknown.** Synthetic Dice ≈ 1.0 is NOT indicative. On real CT expect
-  intensity methods (otsu/multiotsu/kmeans/gmm) to be weak and leak into touching isointense
-  organs; watershed/region-growing depend heavily on seed quality; `oracle` gives the upper
-  bound. See §10 for rough expectations.
-- **Surface metrics not in mm** (no spacing) — consistent with the U-Net, so fair, but note it.
-- **Tier-3 texture** needs the non-resized (`Bnr`) track for physically consistent scale;
-  the `auto` prior does not apply there.
-- No CSV aggregation yet (only per-run JSON + a pooled-Dice summary printed by the runner).
+**Tier 1** (old seeding):
+
+| method | auto-A | oracle-A | auto-B | oracle-B | note |
+|---|---|---|---|---|---|
+| otsu / multiotsu / kmeans / gmm | ~0.03–0.06 | ~0.03–0.11 | ~0.01–0.06 | ~0.03–0.11 | **predict-everything** (prec ~0.02); auto≈oracle (one giant component → component-selection no-op) |
+| region_growing | 0.233 | 0.372 | 0.159 | 0.484 | seeded, moderate |
+| **watershed** | 0.476 | **0.922** | 0.355 | **0.928** | **flagship**; oracle ≈ U-Net |
+
+**Tier 2** (old seeding):
+
+| method | auto-A | oracle-A | auto-B | oracle-B | s/case |
+|---|---|---|---|---|---|
+| chanvese | 0.490 | 0.783 | 0.389 | 0.849 | ~17s |
+| **morphgac** | **0.588** | **0.898** | 0.504 | 0.898 | ~30s |
+| graphcut | 0.231 | 0.772 | 0.199 | 0.799 | ~4s |
+| **random_walker** | 0.422 | 0.881 | 0.337 | **0.902** | ~2s |
+
+**Tier 3 `gabor`** (amfm / granulometry not yet reviewed): Dice **~0.015–0.06** (auto≈oracle,
+prec/rec both low → large mislocated blob), **worse than the intensity baselines**, and the
+**slowest / heaviest** (~39 s/case, ~1.2–1.6 GB). Expected: spleen is texture-less, so Gabor
+features act as noise; standardizing 8 texture features vs 1 intensity lets noise dominate
+(esp. Track A). A valid **negative baseline** ("texture doesn't help for a homogeneous organ").
+
+**Key insights:**
+1. **Seeded methods ≈ U-Net given good seeds** (watershed/morphgac/random_walker oracle ~0.88–0.92)
+   → the ceiling is high; the whole gap is **automatic localization**.
+2. **The `auto` failures were 100% EMPTY predictions** (empty auto fg-markers on ~1/3 of cases);
+   0% were mis-located. Conditional on a non-empty marker, morphgac auto ≈ 0.86 (≈ its oracle).
+   → the **new adaptive seeding should close most of the auto gap** (re-run pending).
+3. **Track A vs B:** in `auto`, A > B (old seeding produced MORE empty markers on B's shifted
+   intensities); in `oracle`, **B ≥ A** (B's sharper contrast helps delineation → B works as
+   designed). The auto-B deficit is a seeding artefact, expected to vanish after the re-run.
+4. **Intensity (T1) and texture (T3) methods "predict everything"** because their candidate is one
+   connected soft-tissue blob → component selection can't isolate the spleen (auto≈oracle) → the
+   pending **spatial-prior masking** (§10) is the fix.
+5. **Cost:** all CPU, 0.4–40 s/case, <1.6 GB. random_walker is the sweet spot (fast + high oracle).
 
 ---
 
-## 10. Implementation plan (tiers) & expectations
+## 10. What is NOT done / pending improvements / risks
+
+- **Re-run `auto` of the 6 seeded methods** with the new seeding (delete old `*_auto_*.json`
+  first). Oracle / intensity / Tier-3 are unaffected by the seeding change.
+- **Pending improvement #1 — spatial-prior MASKING** for `requires_seeds=False` methods
+  (T1 intensity ×4 + T3 texture ×3): restrict the candidate to the high `prior×match` region
+  before component selection, so they stop predicting the whole body. Applies in
+  `run_experiment.py:localise()` (auto branch). Fair (training prior only). NOT implemented.
+- **Pending #2 (optional):** a stricter single-GT-seed oracle (tests growth, not just boundary).
+- **Pending #3 (deferred by user):** `heuristic` zero-training regime (fixed anatomical prior) to
+  showcase the "no training data" advantage over U-Net.
+- **amfm / granulometry** real results not yet reviewed (likely similar to gabor: near-zero).
+- **U-Net head-to-head table** not yet assembled (needs the U-Net numbers, run separately on GPU).
+- **No CSV/table aggregation** committed (ad-hoc scripts only). **Tier 4 hybrids** not started.
+- Surface metrics in resized-voxel units (not mm) — consistent, so fair, but note it.
+
+---
+
+## 11. Implementation plan (tiers) & expectations
 
 | Tier | Methods | Status |
 |---|---|---|
-| **1 — baselines** | Otsu, multi-Otsu, K-means, GMM, seeded region growing, marker-controlled watershed | **DONE** |
-| **2 — core** | **Chan–Vese / Morphological ACWE** (region level set), **Geodesic Active Contours / Morph-GAC** (edge level set, Ch.17), **graph cuts** (MRF max-flow), **random walker** (Grady), **GMM + MRF/Potts** | **DONE** (2D per-slice; graphcut = GMM+MRF via PyMaxflow) |
-| **3 — texture / morphology (Maragos flavour)** | **Gabor / AM-FM (Teager energy, DESA) features → curve evolution / clustering** (Ch.13), **granulometries / pattern spectrum**, **anisotropic diffusion (Perona–Malik)** preproc | TODO |
-| **4 — hybrids** (later) | CNN prob-map + level-set/CRF refinement; traditional features as CNN channels; watershed/superpixels ↔ network seeds; differentiable morphology / active-contour loss; unrolled level sets | TODO |
+| **1 — baselines** | otsu, multiotsu, kmeans, gmm, region_growing, watershed | **DONE + evaluated** |
+| **2 — core** | chanvese (MorphACWE), morphgac (Morph-GAC), graphcut (=GMM+MRF), random_walker | **DONE + evaluated** |
+| **3 — texture/morphology** | gabor, amfm (Teager/DCA), granulometry (pattern spectrum) | **DONE**; gabor evaluated |
+| **4 — hybrids** (later) | CNN prob-map + level-set/CRF refine; traditional features as CNN channels; seeds ↔ network; differentiable morphology / active-contour loss; unrolled level sets | TODO |
 
-**Rough Dice expectations, easy organ, `auto` regime** (real data): threshold/K-means
-0.3–0.6; region-growing/watershed 0.6–0.8; (Tier-2 region level sets / graph cuts) 0.75–0.90;
-`oracle` upper bounds higher (~0.9+); **U-Net ≈ 0.90–0.95**. Tumours (other tasks): traditional
-often < 0.4.
-
-Tier 2/3 plug into the **same `Segmenter` interface and runner** with no changes to the
-harness (`run_tier1.py` handles seeded vs intensity methods and both regimes generically).
+**Real-data expectations now confirmed:** seeded methods `oracle` ~0.77–0.92; seeded `auto`
+0.23–0.59 with old seeding (empty-marker limited) → expected to rise substantially after the
+seeding fix; intensity & texture methods ~0.02–0.06 (predict-everything) until masking is added;
+U-Net ≈ 0.90–0.95.
 
 ---
 
-## 11. Immediate next steps (in order)
+## 12. Immediate next steps (in order)
 
-1. **Real run on the VM** (see §12). Push the repo, `curl` the runner, `nohup` it. Inspect
-   the log for the preprocessing step and the pooled-Dice summary. Fix any real-NIfTI issues.
-2. **Bring back the `results/<method>/*.json`** and sanity-check real numbers + failure modes
-   (leakage, empty-slice FPs, seed quality). These guide Tier 2.
-3. **(Optional) CSV/table aggregation** of all JSONs for the report (method×regime×track×fold →
-   Dice/HD95/ASSD/time/RAM).
-4. **Tier 2 implementation** — start with **Chan–Vese / Morphological ACWE** (region-based,
-   robust on weak boundaries) and **graph cuts / random walker** (strong seeded methods), all
-   as new `methods/*.py` registered in `REGISTRY`. Then GAC/Morph-GAC.
-5. Later: Tier 3 (texture/morphology), then the **U-Net baseline run** (separate, GPU) for the
-   head-to-head table, then Tier 4 hybrids.
+1. **Push the updated `seeding.py`; re-run `auto` for the 6 seeded methods** on the VM
+   (delete old `*_auto_*.json` first). Verify the auto gap closes.
+2. **Implement + run spatial-prior masking** for the intensity + texture methods (fixes predict-
+   everything).
+3. **Aggregate all results to a CSV/table** (method×regime×track×fold → Dice/HD95/ASSD/time/RSS).
+4. **Assemble the U-Net vs traditional head-to-head** table (accuracy / time / memory).
+5. Later: optional stricter oracle and/or heuristic zero-training regime; then Tier-4 hybrids.
 
 ---
 
-## 12. How to run (commands)
+## 13. How to run (commands)
 
-**Self-contained (recommended), on the VM, in background:**
+**Self-contained per tier (VM, background):**
 ```bash
-# after pushing this repo (branch main):
-curl -O https://raw.githubusercontent.com/ThanoSnake/CV_SemesterProject_TradMethods/main/run_all_tier1.sh
-nohup bash run_all_tier1.sh &          # progress: tail -f ~/tradseg-run/run_*.log
-# env overrides: FOLDS="0"  TRACKS="A"  METHODS="multiotsu watershed"  ADVANCED=0  BRANCH=master
+curl -O https://raw.githubusercontent.com/ThanoSnake/CV_SemesterProject_TradMethods/main/run_tier2.sh
+nohup bash run_tier2.sh &          # progress: tail -f ~/tradseg-run/run_tier*_*.log
+# env overrides: FOLDS="0"  TRACKS="A"  METHODS="morphgac random_walker"  REGIMES="auto"  ADVANCED=0  BRANCH=master
 ```
-It clones→installs deps→downloads Spleen (once)→preprocesses A & B (once)→runs
-`method × regime × track × fold`→`results/<method>/`→prints a pooled-Dice summary. Idempotent
-(skip-if-exists). **Does not run the U-Net.**
+Each `run_tier<N>.sh` clones/updates → deps → downloads (once) → preprocesses A&B (once) →
+runs that tier's methods → `results/tier<N>/<method>/` → pooled-Dice summary. Idempotent
+(skip-if-exists). Run tiers one at a time (shared repo + data). **Re-run only what changed via
+`METHODS=... REGIMES=...` overrides + deleting the stale JSONs.**
 
-**Manual (from the repo root, i.e. inside this folder on the VM):**
+**Manual (from the repo root on the VM):**
 ```bash
 pip install -r requirements.txt
-export DATA_DIR=$PWD/data/Task09_Spleen        # must contain imagesTr/ + labelsTr/
-python3 preprocessing.py --track A
-python3 preprocessing.py --track B
-python3 run_tier1.py --method multiotsu --fold 0 --regime auto \
+export DATA_DIR=$PWD/data/Task09_Spleen
+python3 preprocessing.py --track A ; python3 preprocessing.py --track B
+python3 run_experiment.py --method morphgac --fold 0 --regime auto \
     --preprocessed-dir data/Task09_Spleen/preprocessed_A --advanced
 ```
 
 ---
 
-## 13. How to extend (for the next LLM)
+## 14. How to extend (for the next agent)
 
-- **Add a method:** create `methods/<name>.py` with a `Segmenter` subclass implementing
-  `segment_volume(image, seeds=None)`. If it needs seeds, set `requires_seeds=True` and
-  `seed_type="points"|"markers"`. Register it in `methods/__init__.py:REGISTRY`. The runner
-  then handles auto/oracle seeding and component selection automatically.
-- **Keep the fairness contract:** operate on channel-0 `[0,1]` images, never read GT in the
-  segmenter, evaluate per-volume with `metrics.evaluate_case`, keep the 256 space for the
-  headline comparison.
-- **Everything lives in this folder** (`tradseg/` == repo root). Do not scatter files into the
-  parent `TradSegMethods/` (that is outside the repo and the user does not track it).
-- **Run flat:** `python3 <script>.py`, absolute imports. If you add a subpackage, its internal
-  imports may be relative (`from .x import`), but references to top-level modules must be
-  absolute (`import config`), never `from .. import config`.
-- **Verify** new code the same way: quick numpy/scipy unit checks + a synthetic
-  `(2,Z,256,256)` integration run through `run_tier1.py` before claiming it works.
+- **Add a method:** `methods/<name>.py` with a `Segmenter` subclass + `tier` attribute; if seeded,
+  set `requires_seeds=True` and `seed_type="points"|"markers"`. Register in `REGISTRY`; add a
+  `build_method` branch in `run_experiment.py`. `list_methods.py` + `run_tier<tier>.sh` pick it up.
+- **Keep the fairness contract:** operate on ch0 `[0,1]`; never read GT in the segmenter; evaluate
+  per-volume via `metrics.evaluate_case`; keep the 256 space for the headline.
+- **Everything lives in `tradseg/`** (== repo root). Flat layout, absolute imports (`import config`,
+  never `from .. import config`; subpackage-internal relative imports are fine).
+- **Verify** new code with numpy/scipy unit checks + a synthetic `(2,Z,256,256)` run through
+  `run_experiment.py` before claiming it works.
+- **Do NOT auto-update this file** — the user updates PROJECT_STATE.md only on explicit request.
 
 ---
 
-## 14. External references & memory
+## 15. External references & memory
 
-- **Idea sources** (in the parent dir, not in the repo): the two Maragos textbook chapters —
-  `../book-cv05_13_chapter13_Texture.pdf` (Textons, Gabor/AM-FM energy operators & DESA,
-  MRF/GRF, granulometries) and `../book-cv05_17_chapter17_ActivContourLevelsetVar.pdf`
-  (snakes, curve evolution & level sets, geometric/geodesic active contours, morphological
-  PDEs, watershed/eikonal, variational methods). Tier-2/3 draw directly from these.
-- **Baseline** (parent dir, separate repo): `../my_unet-uncertainty/` — the U-Net + its
-  preprocessing/splits/eval that define the fairness contract in §4.
-- **Persistent agent memory** for this workspace lives under the Claude projects memory dir
-  (auto-loaded each session via `MEMORY.md`): keys `project-tradsegmethods`,
-  `unet-baseline-data-contract`, `env-python-anaconda`, `user-profile`. This document is the
-  human/agent-readable superset.
+- **Idea sources** (parent dir, not in repo): `../book-cv05_13_chapter13_Texture.pdf` (Textons,
+  Gabor/AM-FM energy operators & DESA, MRF/GRF, granulometries) and
+  `../book-cv05_17_chapter17_ActivContourLevelsetVar.pdf` (snakes, curve evolution & level sets,
+  geometric/geodesic active contours, morphological PDEs, watershed/eikonal, variational methods).
+- **Baseline:** `../my_unet-uncertainty/` — U-Net + its preprocessing/splits/eval (fairness contract §4).
+- **Persistent agent memory** (auto-loaded via `MEMORY.md`): keys `project-tradsegmethods`,
+  `unet-baseline-data-contract`, `env-python-anaconda`, `user-profile`, `feedback-docs-cadence`.
 
 ---
 
-*Last updated: 2026-07-06. Tier 1 + Tier 2 implemented and synthetic-verified; awaiting first real run on the VM.*
+*Last updated: 2026-07-07. Tiers 1–3 implemented and run on real data; Tier 1/2 + Tier-3 gabor
+evaluated; adaptive-seeding overhaul done (auto re-run pending); spatial-prior masking pending.*

@@ -68,24 +68,56 @@ class SpatialPrior:
     def select(self, mask, image):
         return P.select_component_by_prior(mask, self.prior_volume(image.shape), reduce="sum")
 
-    # -- markers for watershed ------------------------------------------------
-    def auto_markers(self, image, body, hi=0.6, lo=0.12, match_thr=0.5, erode=1):
-        prior = self.prior_volume(image.shape)
-        match = self.intensity_match(image)
-        fg = (prior > hi) & (match > match_thr) & body
-        if fg.any() and erode:
-            er = ndi.binary_erosion(fg, iterations=erode)
-            fg = er if er.any() else fg
-        bg = (~body) | (body & (prior < lo))
+    # -- adaptive, always-non-empty seed (top-p% of the prior x match score) ---
+    # Replaces the old fixed-threshold marker (prior>0.6 & match>0.5), which produced an
+    # EMPTY fg on ~1/3 of cases -> guaranteed Dice 0. Here, per slice, we take the top
+    # `top_frac` voxels of the score (a compact, centred blob). A slice qualifies only if
+    # its peak score >= `slice_gate` x the global peak, so the intensity match gates out
+    # non-spleen slices (no z-prior is available). A global argmax fallback guarantees a
+    # non-empty seed. Uses ONLY the training prior + training intensity model + the test
+    # image (never the test GT) -> same fairness class as before, just robust.
+    def _seed_from_score(self, score, body, top_frac, slice_gate, min_seed):
+        fg = np.zeros(score.shape, bool)
+        gmax = float(score.max())
+        if gmax <= 0:                                    # degenerate: pick the single best voxel
+            fg[np.unravel_index(int(np.argmax(score)), score.shape)] = True
+            return fg
+        gate = slice_gate * gmax
+        for z in range(score.shape[0]):
+            bz = body[z]
+            sz = score[z]
+            if not bz.any() or float(sz.max()) < gate:   # not a spleen slice -> no seed
+                continue
+            thr = np.quantile(sz[bz], 1.0 - top_frac)
+            m = (sz >= thr) & bz & (sz > 0)
+            if int(m.sum()) < min_seed:                  # ensure a minimum compact seed
+                k = min(min_seed, int((sz > 0).sum()))
+                if k > 0:
+                    top = np.argpartition(sz.ravel(), -k)[-k:]
+                    mm = np.zeros(sz.size, bool); mm[top] = True
+                    m = mm.reshape(sz.shape) & bz
+            fg[z] |= m
+        if not fg.any():                                 # global guarantee of a non-empty seed
+            fg[np.unravel_index(int(np.argmax(score)), score.shape)] = True
+        return fg
+
+    # -- markers for watershed / graph cut / random walker / level-set init ----
+    def auto_markers(self, image, body, top_frac=0.02, slice_gate=0.35, min_seed=20, lo=0.12):
+        score = self.score_volume(image, body)
+        fg = self._seed_from_score(score, body, top_frac, slice_gate, min_seed)
+        bg = (~body) | (body & (self.prior_volume(image.shape) < lo))
         return fg, bg
 
-    # -- seed points for region growing ---------------------------------------
-    def auto_seed_points(self, image, body, k=1):
+    # -- seed points for region growing (one centred seed per spleen slice) ----
+    def auto_seed_points(self, image, body, k=1, top_frac=0.02, slice_gate=0.35, min_seed=20):
         score = self.score_volume(image, body)
-        if not np.any(score > 0):
-            return []
-        idx = np.argsort(score, axis=None)[::-1][:k]
-        return [tuple(int(c) for c in np.unravel_index(i, score.shape)) for i in idx]
+        fg = self._seed_from_score(score, body, top_frac, slice_gate, min_seed)
+        pts = []
+        for z in range(score.shape[0]):
+            if fg[z].any():
+                yx = np.unravel_index(int(np.argmax(np.where(fg[z], score[z], -np.inf))), fg[z].shape)
+                pts.append((z, int(yx[0]), int(yx[1])))
+        return pts
 
 
 # --------------------------- oracle (GT-derived) -----------------------------
